@@ -1,0 +1,346 @@
+---
+title: "Legacy theming with bslib and thematic"
+output: 
+  html_document:
+    code_folding: show
+    theme:
+      bg: "#202123"
+      fg: "#B8BCC2"
+      primary: "#EA80FC"
+      base_font:
+        google: Prompt
+      heading_font:
+        google: Proza Libre
+      version: 3
+---
+
+```{r setup, include=FALSE}
+if (requireNamespace("thematic")) 
+  thematic::thematic_rmd(font = "auto")
+```
+
+## R Markdown
+
+This is an R Markdown document themed with [`{bslib}` package](https://rstudio.github.io/bslib/). `{bslib}` makes it easy to customize the main colors and fonts of a `html_document`, [`flexdashboard::flex_dashboard`](https://flexdashboard-pkg.netlify.app/articles/articles/theme.html), [shiny::fluidPage()](https://shiny.rstudio.com/reference/shiny/latest/fluidPage.html), or more generally any website that uses [Bootstrap](https://getbootstrap.com/) for styling. The `theme` parameter in the yaml front-matter of this Rmd document describes a [`bslib::bs_theme()`](https://rstudio.github.io/bslib/reference/bs_theme.html) object. This particular example uses Bootstrap 3 (`version: 3`), which is primarily for 'legacy' documents that would break with Bootstrap 4 or above.
+
+## Themed Plots {.tabset .tabset-pills}
+
+When running this document with [`{thematic}`](https://rstudio.github.io/thematic/) installed, the `thematic::thematic_rmd(font = "auto")` effectively translates `theme` (CSS) settings to new global theming defaults for `{ggplot2}`, `{lattice}`, and `{base}` R graphics:
+
+### ggplot2
+
+```{r}
+library(lme4)
+library(emmeans)
+library(ggplot2)
+library(tidyverse)
+```
+
+### lattice
+
+```{r}
+# ✅ 1. Load Data and Preprocess -----------------------------------------------
+df <- read_csv("data/tidy/paired_data/final_data_for_analysis_iob_check.csv")
+
+
+# Times glc, start roc, glc change by 18
+df <- df %>%
+  mutate(glc = glc * 18,
+         start_roc = start_roc * 18,
+         glc_change = glc_change * 18)
+
+# Add quadratic glucose column
+df <- df %>%
+  mutate(glc_quadratic = glc^2)
+
+
+head(df)
+
+# Scale variables 
+#df <- df %>%
+ # mutate(across(c(duration, glc, start_roc, age, cv, bmi, iob_kg, glc_quadratic, hba1c), scale))
+
+#df <- df %>%
+ # mutate(across(c(duration, glc, start_roc, age, cv, bmi, iob_kg, glc_quadratic, hba1c), ~ .x - mean(.x, na.rm = TRUE)))
+
+```
+
+### base
+
+
+```{r}
+library(lmerTest)
+#df$form_of_exercise <- factor(df$form_of_exercise, levels = c("none", "aer", "mix", "ana"))
+df$modality <- ifelse(df$insulin_modality == "closed_loop", "closed_loop", "other")
+#df$modality <- factor(df$modality, levels = c("other", "closed_loop"))
+
+#df$exercise <- factor(df$exercise, levels = c(0, 1), labels = c("Non-PA", "PA"))
+
+model <- lmer(glc_change ~ exercise * (duration  + start_roc + age +
+                cv + bmi + iob_kg+ glc) #+ modality
+                 + #glc_quadratic  + 
+                hba1c + (1 | bout_id)+ (1 | ID)
+                ,
+              data = df)
+
+summary(model)  # Now includes p-values
+
+```
+
+
+
+```{r}
+library(tidyverse)
+
+# STEP 1: Summarise both PA and non-PA bouts
+summary_both <- df %>%
+  filter(exercise %in% c(0, 1)) %>%
+  group_by(ID, exercise) %>%
+  summarise(
+    mean_change = mean(glc_change, na.rm = TRUE),
+    sd_change = sd(glc_change, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(exercise = ifelse(exercise == 1, "Exercise", "Matched non-Exercise"))
+
+# STEP 2: Reorder IDs by exercise mean
+id_order <- summary_both %>%
+  filter(exercise == "Exercise") %>%
+  arrange(mean_change) %>%
+  pull(ID)
+
+summary_both <- summary_both %>%
+  mutate(ID = factor(ID, levels = id_order),
+         exercise = factor(exercise, levels = c("Matched non-Exercise", "Exercise")))
+
+# STEP 3: Plot
+ggplot(summary_both, aes(x = ID, y = mean_change, color = exercise)) +
+  geom_point(position = position_dodge(width = 0.5), size = 2) +
+  geom_errorbar(aes(ymin = mean_change - sd_change, ymax = mean_change + sd_change),
+                position = position_dodge(width = 0.5), width = 0.3, alpha = 0.7) +
+  scale_color_manual(values = c("Matched non-Exercise" = "steelblue", "Exercise" = "tomato")) +
+  coord_flip() +
+  labs(
+    title = "Mean ± SD Glucose Change Per Participant",
+    subtitle = "Exercise vs matched non-exercise bouts",
+    x = "Participant ID (ordered by exercise drop)",
+    y = "Glucose change (mmol/L)",
+    color = ""
+  ) +
+  theme_minimal() +
+  theme(legend.position = "top")
+
+
+```
+
+```{r}
+library(tidyverse)
+
+# STEP 1: Count how many bouts each person has per condition
+counts <- df %>%
+  filter(exercise %in% c(0, 1)) %>%
+  group_by(ID, exercise) %>%
+  summarise(n = n(), .groups = "drop")
+
+# STEP 2: Keep only those with ≥3 bouts in both conditions
+eligible_IDs <- counts %>%
+  pivot_wider(names_from = exercise, values_from = n, values_fill = 0) %>%
+  filter(`0` >= 3, `1` >= 3) %>%
+  pull(ID)
+
+# STEP 3: Filter main dataset
+summary_both <- df %>%
+  filter(ID %in% eligible_IDs, exercise %in% c(0, 1)) %>%
+  group_by(ID, exercise) %>%
+  summarise(
+    mean_change = mean(glc_change, na.rm = TRUE),
+    sd_change = sd(glc_change, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(exercise = ifelse(exercise == 1, "Physical Activity", "Matched non-Activity"))
+
+# STEP 4: Reorder IDs by exercise mean
+id_order <- summary_both %>%
+  filter(exercise == "Physical Activity") %>%
+  arrange(mean_change) %>%
+  pull(ID)
+
+summary_both <- summary_both %>%
+  mutate(ID = factor(ID, levels = id_order),
+         exercise = factor(exercise, levels = c("Physical Activity", "Matched non-Activity")))
+
+# STEP 5: Plot
+ggplot(summary_both, aes(x = ID, y = mean_change, color = exercise)) +
+  geom_point(position = position_dodge(width = 0.5), size = 2) +
+  geom_errorbar(aes(ymin = mean_change - sd_change, ymax = mean_change + sd_change),
+                position = position_dodge(width = 0.5), width = 0.3, alpha = 0.7) +
+  scale_color_manual(values = c("Matched non-Activity" = "steelblue", "Physical Activity" = "tomato")) +
+  coord_flip() +
+  labs(
+    title = "Mean ± SD Glucose Change Per Participant (≥3 Bouts)",
+    subtitle = "Physical activity vs matched non-activity bouts",
+    x = "Participant ID (ordered by physical activity drop)",
+    y = "Glucose change (mg/dL)",
+    color = ""
+  ) +
+  theme_minimal() +
+  theme(legend.position = "top")
+
+
+```
+
+
+```{r}
+library(sjPlot)
+library(ggplot2)
+install.packages("patchwork")  # This is required for combining plots
+
+library(patchwork)  # for combining plots
+common_ylim <- c(-10, 5)  # adjust as needed based on your glucose change range
+
+pA <- plot_model(model, type = "pred", terms = c("start_roc", "exercise"))[[1]] +
+  labs(title = "A", x = "Rate of glucose change at start (mmol/L/min)", y = "Change in glucose (mmol/L)" +
+  coord_cartesian(ylim = common_ylim)
+  )
+
+pB <- plot_model(model, type = "pred", terms = c("glc", "exercise"))[[1]]  +
+  labs(title = "B", x = "Starting glucose (mmol/L)", y = "Change in glucose (mmol/L)"+
+  coord_cartesian(ylim = common_ylim))
+
+pC <- plot_model(model, type = "pred", terms = c("cv", "exercise")) +
+  labs(title = "C", x = "Glucose variability 1hr prior(CV%)", y = "Change in glucose (mmol/L)"+
+  coord_cartesian(ylim = common_ylim))
+
+pD <- plot_model(model, type = "pred", terms = c("duration", "exercise")) +
+  labs(title = "D", x = "PA duration (min)", y = "Change in glucose (mmol/L)"+
+  coord_cartesian(ylim = common_ylim))
+
+pE <- plot_model(model, type = "pred", terms = c("iob_kg", "exercise"))[[1]]  +
+  labs(title = "E", x = "Insulin on board (U/kg)", y = "Change in glucose (mmol/L)"+
+  coord_cartesian(ylim = common_ylim))
+
+pF <- plot_model(model, type = "pred", terms = c("age", "exercise")) +
+  labs(title = "F", x = "Age (years)", y = "Change in glucose (mmol/L)"+
+  coord_cartesian(ylim = common_ylim))
+
+pG <- plot_model(model, type = "pred", terms = c("bmi", "exercise")) +
+  labs(title = "G", x = "BMI (kg/m²)", y = "Change in glucose (mmol/L)"+
+  coord_cartesian(ylim = common_ylim))
+
+
+pH <- plot_model(model, type = "pred", terms = c("hba1c", "exercise")) +
+  labs(title = "H", x = "HbA1c (mmol/mol)", y = "Change in glucose (mmol/L)"+
+  coord_cartesian(ylim = common_ylim))
+
+pI <- plot_model(model, type = "pred", terms = c("modality", "exercise")) +
+  labs(title = "I", x = "Insulin modality", y = "Change in glucose (mmol/L)"+
+  coord_cartesian(ylim = common_ylim))
+
+combined_plot <- (pA | pB) /
+                 (pC | pD) /
+                 (pE | pF) /
+                 (pG | plot_spacer())
+
+
+# Save to file
+ggsave("outputs/all_predictions_2x3.png", combined_plot, width = 9, height = 13, dpi = 300)
+
+
+```
+
+
+
+```{r}
+library(ggeffects)
+common_ylim <- c(-6*18, 5*18)  # adjust as needed based on your glucose change range
+
+make_prediction_plot <- function(model, term, xlab, title_letter, common_ylim) {
+  pred_data <- ggpredict(model, terms = c(term, "exercise"))  # returns a data.frame
+  # Rename group labels
+  pred_data$group <- recode_factor(
+    pred_data$group,
+    `0` = "No Activity",
+    `1` = "Physical Activity"
+  )
+
+  ggplot(pred_data, aes(x = x, y = predicted, color = group, fill = group)) +
+    geom_line(size = 1) +
+    geom_ribbon(aes(ymin = conf.low, ymax = conf.high), alpha = 0.15, color = NA) +
+    ylim(common_ylim) +
+    labs(title = title_letter, x = xlab, y = "Change in glucose (mg/dL)") +
+    theme_minimal() +
+    theme(legend.position = "bottom")
+}
+
+pA <- make_prediction_plot(model, "start_roc", "Rate of glucose change at start (mg/dL/min)", "A", common_ylim)
+pB <- make_prediction_plot(model, "glc", "Starting glucose (mg/dL)", "B", common_ylim)
+pC <- make_prediction_plot(model, "cv", "Glucose variability 1hr prior (CV%)", "C", common_ylim)
+pD <- make_prediction_plot(model, "duration", "Duration (mins)", "D", common_ylim)
+pE <- make_prediction_plot(model, "iob_kg", "Insulin on board (U/kg)", "E", common_ylim)
+pF <- make_prediction_plot(model, "age", "Age (years)", "F", common_ylim)
+pG <- make_prediction_plot(model, "bmi", "BMI (kg/m²)", "G", common_ylim)
+#pH <- make_prediction_plot(model, "hba1c", "HbA1c (mmol/mol)", "H", common_ylim)
+
+combined_plot <- (pA | pB) /
+                 (pC | pD) /
+                 (pE | pF) /
+                 (pG | plot_spacer())
+
+ggsave("outputs/all_predictions_clean_yaxis.png", combined_plot,  width = 9, height = 16, dpi = 300)
+
+```
+
+
+```{r}
+df$predicted_glc <- predict(model, newdata = df, re.form = NULL)
+
+ggplot(df, aes(x = duration, y = predicted_glc, color = factor(exercise))) +
+  geom_line(stat = "summary", fun = mean) +
+  facet_wrap(~roc_category) +
+  labs(
+    title = "Predicted Glucose Change by Duration (Model-Based)",
+    x = "Duration (min)",
+    y = "Predicted Glucose Change (mmol/L)"
+  ) +
+  theme_minimal()
+
+
+```
+
+```{r}
+ggplot(df, aes(x = duration, y = glc_change, color = factor(exercise))) +
+  geom_point(alpha = 0.4) +  # Raw data points
+  geom_smooth(method = "loess", se = TRUE) +  # Smoothed trend
+  facet_wrap(~roc_category) +
+  labs(
+    title = "Raw Data: Glucose Change by Duration",
+    x = "Duration (min)",
+    y = "Glucose Change (mmol/L)"
+  ) +
+  theme_minimal()
+
+```
+
+```{r}
+library(sjPlot)
+
+plot_model(model, type = "pred", terms = c("duration", "exercise", "roc_category"), grid.points = 50)
+ggsave("outputs/sjPlot_duration_roc_exercise.png", width = 7, height = 5, dpi = 300)
+
+```
+
+```{r}
+plot_model(model, type = "pred", terms = c("duration", "exercise", "roc_category"), grid.points = 50)
+ggsave("outputs/sjPlot_duration_roc_exercise_fixed.png", width = 7, height = 5, dpi = 300)
+```
+
+
+```{r}
+df <- df %>%
+  mutate(start_glc_cat = ifelse(glc < 15, "glc = <15", "IOB > 15"))
+```
+
+```{r}
+plot_model(model, type = "pred", terms = c("duration", "exercise", "start_glc_cat"), grid.points = 50)
+ggsave("outputs/sjPlot_duration_start_glc_exercise_fixed.png", width = 7, height = 5, dpi = 300)
+```
